@@ -1,0 +1,5 @@
+sketches/
+__pycache__/
+*.egg-info/
+build/
+.venv/

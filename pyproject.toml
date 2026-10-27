@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sketch-to-prompt"
+version = "0.1.0"
+description = "Rotate a 3D part in the browser, draw lines on it, add text and hand it to an AI as a prompt"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [{ name = "Thomas Schmiegelt" }]
+
+[project.scripts]
+sketch-to-prompt = "sketch_to_prompt.server:main"
+
+[tool.setuptools]
+packages = ["sketch_to_prompt"]
+
+[tool.setuptools.package-data]
+sketch_to_prompt = ["static/*.html"]

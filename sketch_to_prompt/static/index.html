@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sketch to Prompt</title>
+<style>
+  :root { --bg:#16181d; --panel:#21242b; --rand:#363a44; --text:#e6e8ec; --leise:#9aa1ad; --akzent:#e2483d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, sans-serif; height:100vh;
+         display:grid; grid-template-columns:1fr 340px; grid-template-rows:auto 1fr; }
+  header { grid-column:1/3; display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:8px 10px;
+           background:var(--panel); border-bottom:1px solid var(--rand); }
+  header .g { display:flex; gap:4px; align-items:center; padding-right:10px; margin-right:4px; border-right:1px solid var(--rand); }
+  button, select { background:#2c3039; color:var(--text); border:1px solid var(--rand); border-radius:6px; padding:5px 10px; font:inherit; cursor:pointer; }
+  button:hover { border-color:#5a606d; }
+  button.on { background:var(--akzent); border-color:var(--akzent); color:#fff; }
+  .farbe { width:24px; height:24px; padding:0; border-radius:50%; }
+  .farbe.on { outline:2px solid #fff; outline-offset:2px; }
+  #view { position:relative; overflow:hidden; }
+  #view canvas { display:block; }
+  #view.draw { cursor:crosshair; }
+  #info { position:absolute; left:10px; bottom:10px; background:#000a; padding:4px 8px; border-radius:6px; font:12px monospace; color:var(--leise); }
+  #help { position:absolute; left:10px; top:10px; background:#000a; padding:6px 10px; border-radius:6px; font-size:12px; color:var(--leise); max-width:520px; }
+  aside { background:var(--panel); border-left:1px solid var(--rand); padding:12px; display:flex; flex-direction:column; gap:10px; overflow:auto; }
+  textarea { flex:1; min-height:140px; resize:none; background:#15171c; color:var(--text); border:1px solid var(--rand); border-radius:6px; padding:8px; font:inherit; }
+  #send { background:var(--akzent); border-color:var(--akzent); color:#fff; font-weight:600; padding:10px; }
+  .small { color:var(--leise); font-size:12px; }
+  #parts label { display:flex; gap:6px; align-items:center; font-size:13px; }
+  #parts .row { display:flex; justify-content:space-between; gap:8px; padding:2px 0; }
+  .loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--leise); font-size:16px; pointer-events:none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="g"><label for="model" data-t="model"></label><select id="model"></select>
+    <select id="unit" title="unit"><option>mm</option><option>m</option><option>in</option></select></div>
+  <div class="g"><button id="rotate" class="on" data-t="rotate"></button><button id="drawbtn" data-t="draw"></button></div>
+  <div class="g" id="colors"></div>
+  <div class="g"><button id="undo" data-t="undo"></button><button id="clear" data-t="clear"></button></div>
+  <div class="g" style="border:none"><span data-t="view"></span>
+    <button data-v="top" data-t="top"></button><button data-v="front" data-t="front"></button><button data-v="side" data-t="side"></button><button data-v="iso" data-t="iso"></button></div>
+</header>
+<div id="view">
+  <div id="help" data-t="help"></div>
+  <div id="info">–</div>
+  <div class="loading" id="loading" data-t="loading"></div>
+</div>
+<aside>
+  <strong data-t="parts"></strong>
+  <div id="parts"></div>
+  <strong data-t="text"></strong>
+  <textarea id="text"></textarea>
+  <div id="lines" class="small"></div>
+  <button id="send" data-t="send"></button>
+  <div id="status" class="small"></div>
+</aside>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { STLLoader } from "three/addons/loaders/STLLoader.js";
+import { Line2 } from "three/addons/lines/Line2.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { LineGeometry } from "three/addons/lines/LineGeometry.js";
+
+const TXT = {
+  de: { model: "Modell", rotate: "Drehen", draw: "Zeichnen", undo: "Rückgängig", clear: "Linien löschen", view: "Ansicht:",
+        top: "Oben", front: "Vorne", side: "Seite", iso: "Schräg", loading: "Lade Modell …", parts: "Teile", text: "Text zur Skizze",
+        send: "Senden", visible: "sichtbar", translucent: "durchsichtig", noLines: "Keine Linien.", line: "Linie",
+        points: "Punkte", onPart: "auf dem Bauteil", sending: "Sende …", sent: "Gespeichert in", needInput: "Bitte Text oder Linien angeben.",
+        placeholder: "z. B.: Der Kern soll zwischen Linie 1 und Linie 2 liegen. Linie 1 beginnt an der oberen Ecke …",
+        help: "Drehen: linke Maus · Verschieben: rechte Maus · Zoom: Rad. Zeichnen: Taste Z (zurück: D), dann mit gedrückter Maus ziehen. Linien haften am Bauteil, daneben liegen sie in der Ebene durch die Bildmitte. Jede Linie bekommt eine Nummer für den Text.",
+        part: "Bauteil", free: "frei" },
+  en: { model: "Model", rotate: "Rotate", draw: "Draw", undo: "Undo", clear: "Clear lines", view: "View:",
+        top: "Top", front: "Front", side: "Side", iso: "Iso", loading: "Loading model …", parts: "Parts", text: "Text for the sketch",
+        send: "Send", visible: "visible", translucent: "translucent", noLines: "No lines.", line: "Line",
+        points: "points", onPart: "on the part", sending: "Sending …", sent: "Saved to", needInput: "Please add text or lines.",
+        placeholder: "e.g.: The core should sit between line 1 and line 2. Line 1 starts at the upper corner …",
+        help: "Rotate: left mouse · Pan: right mouse · Zoom: wheel. Draw: key Z (back: D), then drag. Lines stick to the part; off the part they lie in the plane through the view centre. Every line gets a number to refer to in the text.",
+        part: "part", free: "free" } };
+const cfg = await (await fetch("/config")).json();
+const L = TXT[new URLSearchParams(location.search).get("lang") || cfg.lang] || TXT.de;
+document.documentElement.lang = L === TXT.en ? "en" : "de";
+document.querySelectorAll("[data-t]").forEach(e => e.textContent = L[e.dataset.t]);
+document.getElementById("text").placeholder = L.placeholder;
+
+const box = document.getElementById("view");
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(window.devicePixelRatio); box.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x16181d);
+const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 1e6); camera.up.set(0, 0, 1);
+const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x404050, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); scene.add(sun);
+const PART_COLORS = [0xa9b0ba, 0x2a7fd4, 0xd99a3a, 0x7cc47c, 0xb07cc4, 0xc47c7c];
+let parts = [], centre = new THREE.Vector3(), size = 1;
+const loader = new STLLoader(), modelSel = document.getElementById("model");
+
+function resize() {
+  const w = box.clientWidth, h = box.clientHeight;
+  renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
+  for (const l of lines) l.obj.material.resolution.set(w, h);
+}
+window.addEventListener("resize", resize);
+
+async function loadModel(name) {
+  document.getElementById("loading").style.display = "flex";
+  for (const p of parts) { scene.remove(p.mesh); p.mesh.geometry.dispose(); }
+  parts = [];
+  const bb = new THREE.Box3();
+  for (const [i, file] of cfg.models[name].entries()) {
+    const g = loader.parse(await (await fetch(`/part?model=${encodeURIComponent(name)}&part=${encodeURIComponent(file)}`)).arrayBuffer());
+    g.computeVertexNormals(); g.computeBoundingBox(); bb.union(g.boundingBox);
+    const mat = new THREE.MeshStandardMaterial({ color: PART_COLORS[i % PART_COLORS.length], metalness: 0.4, roughness: 0.5, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(g, mat); mesh.userData.part = file; scene.add(mesh);
+    parts.push({ file, mesh, mat });
+  }
+  bb.getCenter(centre); size = bb.getSize(new THREE.Vector3()).length();
+  camera.near = size / 1000; camera.far = size * 100; camera.updateProjectionMatrix();
+  const pl = document.getElementById("parts"); pl.innerHTML = "";
+  for (const p of parts) {
+    const row = document.createElement("div"); row.className = "row";
+    row.innerHTML = `<span>${p.file}</span><span><label><input type="checkbox" checked> ${L.visible}</label>` +
+                    `<label><input type="checkbox"> ${L.translucent}</label></span>`;
+    const [vis, tr] = row.querySelectorAll("input");
+    vis.onchange = () => p.mesh.visible = vis.checked;
+    tr.onchange = () => { p.mat.transparent = tr.checked; p.mat.opacity = tr.checked ? 0.3 : 1; p.mat.depthWrite = !tr.checked; };
+    p.trBox = tr; pl.appendChild(row);
+  }
+  document.getElementById("loading").style.display = "none";
+  view("iso");
+}
+
+function view(v) {
+  const d = size * 1.4, z = new THREE.Vector3(0, 0, 1);
+  const dirs = { top: [0, 0, 1], front: [0, -1, 0], side: [1, 0, 0], iso: [0.6, -0.7, 0.55] };
+  const pos = centre.clone().addScaledVector(new THREE.Vector3(...dirs[v]).normalize(), d);
+  camera.position.copy(pos); camera.up.copy(v === "top" ? new THREE.Vector3(0, 1, 0) : z);
+  controls.target.copy(centre); camera.lookAt(centre); controls.update();
+  sun.position.copy(pos).add(new THREE.Vector3(0, 0, size));
+}
+document.querySelectorAll("[data-v]").forEach(b => b.onclick = () => view(b.dataset.v));
+
+// --- drawing ---------------------------------------------------------------------------------------------
+const COLORS = { red: 0xe2483d, green: 0x22c55e, blue: 0x3b82f6, yellow: 0xfacc15 };
+let colour = "red", mode = "rotate", active = null;
+const lines = [], cb = document.getElementById("colors");
+for (const [n, c] of Object.entries(COLORS)) {
+  const b = document.createElement("button"); b.className = "farbe" + (n === colour ? " on" : ""); b.title = n;
+  b.style.background = "#" + c.toString(16).padStart(6, "0");
+  b.onclick = () => { colour = n; cb.querySelectorAll(".farbe").forEach(x => x.classList.remove("on")); b.classList.add("on"); };
+  cb.appendChild(b);
+}
+function setMode(m) {
+  mode = m; controls.enabled = m === "rotate";
+  document.getElementById("rotate").classList.toggle("on", m === "rotate");
+  document.getElementById("drawbtn").classList.toggle("on", m === "draw");
+  box.classList.toggle("draw", m === "draw");
+}
+document.getElementById("rotate").onclick = () => setMode("rotate");
+document.getElementById("drawbtn").onclick = () => setMode("draw");
+
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+function pick(ev) {
+  const r = renderer.domElement.getBoundingClientRect(), px = [ev.clientX - r.left, ev.clientY - r.top];
+  mouse.set((px[0] / r.width) * 2 - 1, -(px[1] / r.height) * 2 + 1); ray.setFromCamera(mouse, camera);
+  const hit = ray.intersectObjects(parts.filter(p => p.mesh.visible && !p.mat.transparent).map(p => p.mesh))[0]
+           || ray.intersectObjects(parts.filter(p => p.mesh.visible).map(p => p.mesh))[0];
+  if (hit) return { p: hit.point.clone(), part: hit.object.userData.part, px };
+  const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()), controls.target);
+  const p = new THREE.Vector3(); ray.ray.intersectPlane(plane, p);
+  return { p, part: null, px };
+}
+function badge(text, hex) {
+  const c = document.createElement("canvas"); c.width = c.height = 64; const g = c.getContext("2d");
+  g.fillStyle = "#" + hex.toString(16).padStart(6, "0"); g.beginPath(); g.arc(32, 32, 28, 0, 7); g.fill();
+  g.fillStyle = "#fff"; g.font = "bold 36px system-ui"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(text, 32, 34);
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false }));
+  s.scale.setScalar(size * 0.03); s.renderOrder = 11; return s;
+}
+function redraw(l) {
+  const g = new LineGeometry(); g.setPositions(l.points.flatMap(q => [q.p.x, q.p.y, q.p.z]));
+  l.obj.geometry.dispose(); l.obj.geometry = g;
+}
+box.addEventListener("pointerdown", ev => {
+  if (mode !== "draw" || ev.button !== 0 || !parts.length) return;
+  const t = pick(ev), c = COLORS[colour];
+  const mat = new LineMaterial({ color: c, linewidth: 5, depthTest: false }); mat.resolution.set(box.clientWidth, box.clientHeight);
+  const obj = new Line2(new LineGeometry(), mat); obj.renderOrder = 10; scene.add(obj);
+  const nr = lines.length + 1, b = badge(String(nr), c); b.position.copy(t.p); scene.add(b);
+  active = { nr, colour, points: [t, t], obj, b }; lines.push(active); redraw(active);
+  box.setPointerCapture(ev.pointerId);
+});
+box.addEventListener("pointermove", ev => {
+  if (!parts.length) return;
+  const t = pick(ev), p = t.p, R = Math.hypot(p.x, p.y), phi = Math.atan2(p.y, p.x) * 180 / Math.PI;
+  const u = document.getElementById("unit").value;
+  document.getElementById("info").textContent = `${t.part ? L.part + " " + t.part : L.free}   x ${p.x.toFixed(3)}  y ${p.y.toFixed(3)}  z ${p.z.toFixed(3)} ${u}   R ${R.toFixed(3)}  φ ${phi.toFixed(2)}°`;
+  if (active) {
+    const last = active.points[active.points.length - 1];
+    if (Math.hypot(t.px[0] - last.px[0], t.px[1] - last.px[1]) > 4) { active.points.push(t); redraw(active); }
+  }
+});
+box.addEventListener("pointerup", () => { if (active) { active = null; listLines(); } });
+function remove(l) { scene.remove(l.obj); scene.remove(l.b); l.obj.geometry.dispose(); }
+document.getElementById("undo").onclick = () => { const l = lines.pop(); if (l) remove(l); listLines(); };
+document.getElementById("clear").onclick = () => { while (lines.length) remove(lines.pop()); listLines(); };
+function listLines() {
+  document.getElementById("lines").innerHTML = lines.length ? lines.map(l =>
+    `${L.line} ${l.nr} (${l.colour}): ${l.points.length} ${L.points}, ${l.points.filter(q => q.part).length} ${L.onPart}`).join("<br>") : L.noLines;
+}
+listLines();
+window.addEventListener("keydown", ev => {
+  if (ev.target.tagName === "TEXTAREA") return;
+  if (ev.key === "z" && !ev.ctrlKey) setMode("draw");
+  if (ev.key === "d") setMode("rotate");
+  if (ev.key === "z" && ev.ctrlKey) document.getElementById("undo").click();
+});
+
+// --- send ------------------------------------------------------------------------------------------------
+document.getElementById("send").onclick = async () => {
+  const st = document.getElementById("status"), text = document.getElementById("text").value;
+  if (!text.trim() && !lines.length) { st.textContent = L.needInput; return; }
+  renderer.render(scene, camera);
+  const r4 = v => +v.toFixed(4);
+  const data = {
+    model: modelSel.value, text, unit: document.getElementById("unit").value,
+    camera: { position: camera.position.toArray().map(r4), target: controls.target.toArray().map(r4), up: camera.up.toArray().map(r4),
+              fov_deg: camera.fov, image_px: [box.clientWidth, box.clientHeight] },
+    parts_visible: parts.filter(p => p.mesh.visible).map(p => p.file),
+    parts_translucent: parts.filter(p => p.mat.transparent).map(p => p.file),
+    lines: lines.map(l => ({ nr: l.nr, color: l.colour, points: l.points.slice(1).map(q => ({
+      xyz: q.p.toArray().map(r4), R: r4(Math.hypot(q.p.x, q.p.y)), phi_deg: +(Math.atan2(q.p.y, q.p.x) * 180 / Math.PI).toFixed(3),
+      on_part: !!q.part, part: q.part, image_px: q.px })) })),
+    image: renderer.domElement.toDataURL("image/png"),
+  };
+  st.textContent = L.sending;
+  try {
+    const r = await (await fetch("/sketch", { method: "POST", body: JSON.stringify(data) })).json();
+    st.textContent = `${L.sent} ${r.folder}`;
+  } catch (e) { st.textContent = "Error: " + e; }
+};
+
+// --- start -----------------------------------------------------------------------------------------------
+for (const n of Object.keys(cfg.models)) { const o = document.createElement("option"); o.value = o.textContent = n; modelSel.appendChild(o); }
+modelSel.onchange = () => { document.getElementById("clear").click(); loadModel(modelSel.value); };
+resize();
+await loadModel(modelSel.value);
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>
